@@ -1,6 +1,6 @@
 # llama Windows Launchers
 
-一组 Windows 启动与管理脚本：拖入 GGUF 启动 llama.cpp，支持 Vulkan GPU、CPU、Intel NPU，以及 llama.cpp 多版本安装、切换与回退。
+一组 Windows 启动与管理脚本：拖入 GGUF 启动 llama.cpp，支持 Vulkan GPU、独立 CPU、NVIDIA CUDA、Intel NPU，以及 llama.cpp 多版本安装、切换与回退。
 
 仓库只包含脚本，不包含模型、llama.cpp 二进制、Python 虚拟环境或驱动。模型可以保存在任意文件夹，无需复制进仓库。
 
@@ -8,7 +8,8 @@
 
 - Windows x64，Windows PowerShell 5.1 或更高版本。`.bat` 默认调用系统的 `powershell.exe`。
 - 更新运行时需要访问 GitHub；自动下载模型需要访问 Hugging Face。
-- Vulkan 模式需要支持 Vulkan 的 GPU 和驱动；CPU 模式也使用 Vulkan 发行包中的 CPU 后端。
+- Vulkan 模式需要支持 Vulkan 的 GPU 和驱动；CPU 模式使用独立的 Windows x64 CPU 发行包。
+- CUDA 模式使用官方 Windows x64 CUDA 12.4 发行包及其 cudart 依赖，需要兼容 CUDA 12.4 的 NVIDIA 显卡和驱动。脚本不安装驱动；随包部署运行库，不要求自行安装完整 CUDA Toolkit。
 - NPU 模式需要受 OpenVINO 支持的 Intel NPU 和驱动。模型架构、量化方式和运行时版本都会影响支持情况与输出质量。
 - GGUF 路径不需要 Python。可选的 OpenVINO GenAI 路径需要 PATH 中有 `python`，且该 Python 版本有对应 OpenVINO wheel。
 
@@ -33,12 +34,31 @@
 .\start-gguf.bat "E:\模型\model.gguf" -p 29000 -pt 100 -c 8192
 
 # 使用 CPU
+.\manage-llama.bat Update -b cpu
 .\start-gguf.bat "E:\模型\model.gguf" -b CPU
 ```
 
 包含空格的路径要加引号；相对路径以命令运行目录为基准。分片 GGUF 传入第一片，其余分片应在同一目录。
 
 ## 普通启动器
+
+CPU、CUDA 有各自的快捷入口；安装一次后即可使用：
+
+```powershell
+.\manage-llama.bat Update -b cpu
+.\start-cpu.bat -m "E:\模型\model.gguf"
+
+.\manage-llama.bat Check -b cuda
+.\manage-llama.bat Update -b cuda
+.\start-cuda.bat -m "E:\模型\model.gguf" -ap
+
+# 拖入入口也支持 CUDA；自动尝试端口
+.\start-gguf.bat "E:\模型\model.gguf" -b CUDA
+```
+
+`start-cpu.bat` / `start-cuda.bat` 接受 `-m` 等普通启动参数，默认固定端口 28080，可加 `-ap`。拖放文件仍使用 `start-gguf.bat`。`-b iGPU` 与 `-b Vulkan` 都选择 Vulkan 运行时；实际使用哪块 Vulkan GPU 取决于 llama.cpp 的设备选择。
+
+**旧版用户注意：** `-b CPU` 现在选择独立 CPU 运行时，需要先执行 `Update -b cpu`。CPU/CUDA 不会隐式回退到 Vulkan 安装。
 
 ```powershell
 # Vulkan，固定端口 28080
@@ -93,7 +113,7 @@ GenAI 辅助服务提供 `/health`、`/v1/models` 和 `/v1/chat/completions`，�
 
 ## 版本管理
 
-Vulkan 与 OpenVINO 分开管理，使用 `-b vulkan`（默认）或 `-b openvino` 选择。
+四种运行时分开管理：`-b vulkan`（默认）、`-b openvino`、`-b cpu`、`-b cuda`。各自独立安装、默认选择、回退和删除。
 
 | 命令 | 作用 |
 |---|---|
@@ -117,6 +137,8 @@ Vulkan 与 OpenVINO 分开管理，使用 `-b vulkan`（默认）或 `-b openvin
 
 版本号为示例，请按实际发行和安装情况替换。下载只来自 [llama.cpp 官方发行](https://github.com/ggml-org/llama.cpp/releases)。安装会检查包大小、官方 SHA256 摘要和 `llama-server --version`，成功后才保存为完整安装。缺少 SHA256 摘要的发行包会被拒绝。
 
+CUDA 安装同时下载同一发行版的 `llama-...-bin-win-cuda-12.4-x64.zip` 与 `cudart-llama...-bin-win-cuda-12.4-x64.zip`，分别校验后将依赖 DLL 部署到程序旁边，完整依赖文件另保留在 `cuda-dependencies/`。两包均成功后才切换，依赖来源和摘要也写入 `install.json`。`Check -b cuda` 会显示两个包及其大小；CUDA 下载明显大于 CPU/Vulkan。当前不提供 CUDA 13.x 或 ARM64 版本选择。
+
 `latest` 指最近提供对应 Windows x64 包的 build，可能包含预发布；脚本读取发行列表，而不依赖可能没有程序包的 `/releases/latest`。
 
 ```text
@@ -129,8 +151,16 @@ llama-versions/
   openvino/
     current.txt
     b12142/
+  cpu/
+    current.txt
+    b12142/
+  cuda/
+    current.txt
+    b12142/
 llama-vulkan/           可选的原始安装，称为 legacy
 llama-openvino/         可选的原始安装，称为 legacy
+llama-cpu/              可选的原始 CPU 安装
+llama-cuda/             可选的原始 CUDA 安装（含运行库）
 ```
 
 启动器优先使用显式 `-v`，否则读取 `current.txt`，没有指针时回退到 `legacy`。**新克隆的仓库没有 legacy，请先运行 Update。** `Install` 不切换，安装后需 `Use` 或通过启动参数 `-v` 选择。
@@ -151,7 +181,7 @@ llama-openvino/         可选的原始安装，称为 legacy
 |---|---|---|
 | `-h` | `-Help` | 所有入口 |
 | `-a` | `-Action` | 版本管理；命令也可直接作为首参数 |
-| `-b` | `-Backend` | 管理器：vulkan/openvino；普通启动器：iGPU/CPU |
+| `-b` | `-Backend` | 管理器：vulkan/openvino/cpu/cuda；普通启动器：iGPU/Vulkan/CPU/CUDA |
 | `-v` | `-Version` | 管理器、GGUF 启动器 |
 | `-m` | `-Model` | 普通和 NPU 启动器；拖入入口直接传路径 |
 | `-p` | `-Port` | 启动器 |
@@ -174,8 +204,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\manage-llama.ps1 List
 
 ## 仓库内容与发布
 
+离线集成测试（Windows PowerShell 5.1，无需 GPU 或下载模型）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test-backends.ps1
+```
+
+测试用小型模拟发行包验证 CPU/CUDA 安装、依赖部署、启动参数和 SHA256 失败回退，不替代真实显卡推理测试。
+
 - `start-gguf.bat`：拖入和交互输入模型路径。
-- `start-server.*`：Vulkan / CPU 启动器。
+- `start-server.*`：Vulkan / CPU / CUDA 共用启动器。
+- `start-cpu.bat` / `start-cuda.bat`：指定后端的快捷入口。
 - `start-npu.*`：Intel NPU GGUF / GenAI 启动器。
 - `manage-llama.*`：运行时版本管理。
 - `tools/llama-runtime.ps1`：版本路径解析与 GGUF 文件头检查。

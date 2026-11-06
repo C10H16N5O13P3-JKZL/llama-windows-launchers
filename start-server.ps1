@@ -1,8 +1,8 @@
-# iGPU launcher: llama-server (llama.cpp, Vulkan) with LFM3-1.7B on the iGPU, or the CPU.
+# llama-server launcher: Vulkan, standalone CPU, or CUDA 12.4.
 # For the NPU use start-npu.ps1 (OpenVINO, different models: LFM3 computes wrongly on the NPU, see README).
-# Usage:  powershell -ExecutionPolicy Bypass -File .\start-server.ps1 [-Backend iGPU|CPU] [-Port 28080] [-Ctx 16384]
+# Usage: powershell -ExecutionPolicy Bypass -File .\start-server.ps1 [-Backend iGPU|Vulkan|CPU|CUDA] [-Port 28080]
 param(
-    [Alias('b')][ValidateSet("iGPU", "CPU")]
+    [Alias('b')][ValidateSet("iGPU", "Vulkan", "CPU", "CUDA")]
     [string]$Backend = "iGPU",
     [Alias('p')][int]$Port = 28080,
     [Alias('c')][int]$Ctx = 16384,
@@ -19,7 +19,7 @@ if ($Help) {
     @'
 Usage: start-server.bat [-m "E:\models\model.gguf"] [options]
   -m    -Model      GGUF path (default: models/LFM3-1.7B-Q8_0.gguf).
-  -b    -Backend    iGPU (default) or CPU.
+  -b    -Backend    iGPU/Vulkan (default), CPU (standalone build), or CUDA.
   -p    -Port       Server port (default: 28080).
   -c    -Ctx        Context size (default: 16384).
   -addr -HostAddr   Bind address (default: 127.0.0.1).
@@ -41,11 +41,12 @@ External models are read in place. Relative paths use the working directory.
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\tools\llama-runtime.ps1"
 . "$PSScriptRoot\tools\llama-port.ps1"
-$exe = Get-LlamaRuntime 'vulkan' $Version
+$runtimeBackend = switch ($Backend) { 'CPU' { 'cpu' }; 'CUDA' { 'cuda' }; default { 'vulkan' } }
+$exe = Get-LlamaRuntime $runtimeBackend $Version
 $Model = Resolve-Gguf $Model
 if ($Port -lt 1 -or $Port -gt 65535 -or $Ctx -lt 1) { throw 'Invalid Port or Ctx.' }
 # CPU: --device none keeps every op (incl. prompt processing) off the GPU
-$extra = if ($Backend -eq "iGPU") { @("-ngl", "99") } else { @("--device", "none") }
+$extra = if ($Backend -eq 'CPU') { @('--device', 'none') } else { @('-ngl', '99') }
 
 Write-Host "Runtime: $exe"
 if ($AutoPort -and @($ExtraArgs | Where-Object { $_ -match '^(--port|--host)(=|$)' }).Count) {

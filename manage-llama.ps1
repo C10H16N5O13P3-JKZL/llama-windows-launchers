@@ -2,14 +2,14 @@
 [CmdletBinding()]
 param(
     [Alias('a')][ValidateSet('Help','List','Check','Install','Update','Use','Remove')][string]$Action = 'List',
-    [Alias('b')][ValidateSet('vulkan','openvino')][string]$Backend = 'vulkan',
+    [Alias('b')][ValidateSet('vulkan','openvino','cpu','cuda')][string]$Backend = 'vulkan',
     [Alias('v')][string]$Version = 'latest',
     [Alias('d')][switch]$DryRun,
     [Alias('h')][switch]$Help
 )
 if ($Help -or $Action -eq 'Help') {
     @'
-Usage: manage-llama.bat [Action] [-b vulkan|openvino] [-v VERSION] [-d]
+Usage: manage-llama.bat [Action] [-b vulkan|openvino|cpu|cuda] [-v VERSION] [-d]
        manage-llama.bat Help   (or -Help / -h)
 Actions:
   List     List local versions (default; offline).
@@ -20,7 +20,8 @@ Actions:
   Remove   Delete a non-selected managed bNNNNN version (offline).
 Options:
   -a  -Action   Action name; may also be the first positional argument.
-  -b  -Backend  vulkan (default) or openvino; managed independently.
+  -b  -Backend  vulkan (default), openvino, cpu or cuda; independent versions.
+               cuda uses Windows x64 CUDA 12.4, including cudart dependencies.
   -v  -Version  latest (default) or bNNNNN; Use also accepts legacy.
   -d  -DryRun   Preview Remove only; no deletion.
   -h  -Help     Show help without accessing network or installations.
@@ -56,8 +57,28 @@ function Set-Current([string]$Tag) {
     Write-Host "Selected $Backend / $Tag. Restart the server to apply."
 }
 function Get-Assets($Release) {
-    $pattern = if ($Backend -eq 'vulkan') { '^llama-b[0-9]+-bin-win-vulkan-x64\.zip$' } else { '^llama-b[0-9]+-bin-win-openvino(?:-[0-9.]+)?-x64\.zip$' }
+    $pattern = switch ($Backend) {
+        'vulkan' { '^llama-b[0-9]+-bin-win-vulkan-x64\.zip$' }
+        'openvino' { '^llama-b[0-9]+-bin-win-openvino(?:-[0-9.]+)?-x64\.zip$' }
+        'cpu' { '^llama-b[0-9]+-bin-win-cpu-x64\.zip$' }
+        'cuda' { '^llama-b[0-9]+-bin-win-cuda-12\.4-x64\.zip$' }
+    }
     @($Release.assets | Where-Object { $_.name -match $pattern })
+}
+function Get-CudaDependencies($Release) {
+    @($Release.assets | Where-Object { $_.name -match '^cudart-llama(?:-b[0-9]+)?-bin-win-cuda-12\.4-x64\.zip$' })
+}
+function Test-ReleaseAssets($Release) {
+    if (@(Get-Assets $Release).Count -ne 1) { return $false }
+    return ($Backend -ne 'cuda' -or @(Get-CudaDependencies $Release).Count -eq 1)
+}
+function Save-VerifiedAsset($Asset, [string]$Path) {
+    Invoke-WebRequest -UseBasicParsing -Uri $Asset.browser_download_url -Headers $headers -OutFile $Path -TimeoutSec 1800
+    if ((Get-Item -LiteralPath $Path).Length -ne $Asset.size) { throw "Download size mismatch: $($Asset.name)" }
+    $sha = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($Asset.digest -notmatch '^sha256:([a-fA-F0-9]{64})$') { throw "No SHA256 digest: $($Asset.name)" }
+    if ($sha -ne $Matches[1]) { throw "SHA256 mismatch: $($Asset.name)" }
+    return $sha
 }
 
 if ($Action -eq 'List') {
@@ -116,7 +137,7 @@ if ($Version -eq 'latest') {
     $release = $null
     foreach ($page in 1..5) {
         $releases = Invoke-RestMethod -Uri "${api}?per_page=30&page=$page" -Headers $headers -TimeoutSec 60
-        $release = $releases | Where-Object { -not $_.draft -and $_.tag_name -match '^b[0-9]+$' -and @(Get-Assets $_).Count -eq 1 } | Select-Object -First 1
+        $release = $releases | Where-Object { -not $_.draft -and $_.tag_name -match '^b[0-9]+$' -and (Test-ReleaseAssets $_) } | Select-Object -First 1
         if ($release) { break }
     }
     if (-not $release) { throw "No recent Windows x64 $Backend release found." }
@@ -126,10 +147,15 @@ if ($Version -eq 'latest') {
 $assets = @(Get-Assets $release)
 if ($assets.Count -ne 1) { throw 'Release must contain exactly one matching Windows x64 archive.' }
 $asset = $assets[0]
+$dependencies = @()
+if ($Backend -eq 'cuda') {
+    $dependencies = @(Get-CudaDependencies $release)
+    if ($dependencies.Count -ne 1) { throw 'CUDA release must contain exactly one matching CUDA 12.4 cudart archive.' }
+}
 $tag = [string]$release.tag_name
 if ($tag -notmatch '^b[0-9]+$') { throw 'Unexpected release tag.' }
 Write-Host "Selected release: $tag / $($asset.name) (current: $current)"
-if ($Action -eq 'Check') { $asset | Select-Object name,size,digest,browser_download_url | Format-List; return }
+if ($Action -eq 'Check') { (@($asset) + $dependencies) | Select-Object name,size,digest,browser_download_url | Format-List; return }
 $destination = Join-Path $base $tag
 if (-not (Test-Path -LiteralPath $destination)) {
     $null = New-Item -ItemType Directory -Force -Path $base
@@ -137,17 +163,31 @@ if (-not (Test-Path -LiteralPath $destination)) {
     $null = New-Item -ItemType Directory -Path $stage
     $zip = Join-Path $stage 'package.zip'
     try {
-        Invoke-WebRequest -UseBasicParsing -Uri $asset.browser_download_url -Headers $headers -OutFile $zip -TimeoutSec 1800
-        if ((Get-Item -LiteralPath $zip).Length -ne $asset.size) { throw 'Download size mismatch.' }
-        $sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($asset.digest -match '^sha256:([a-fA-F0-9]{64})$') {
-            if ($sha -ne $Matches[1]) { throw 'SHA256 mismatch.' }
-        } else { throw 'Release has no SHA256 digest; refusing an unverified installation.' }
+        $sha = Save-VerifiedAsset $asset $zip
         $unpack = Join-Path $stage 'unpacked'
         Expand-Archive -LiteralPath $zip -DestinationPath $unpack
         $servers = @(Get-ChildItem -LiteralPath $unpack -Recurse -File -Filter llama-server.exe)
         if ($servers.Count -ne 1) { throw 'Archive must contain one llama-server.exe.' }
         $runtime = $servers[0].DirectoryName
+        $dependencyRecords = @()
+        foreach ($dependency in $dependencies) {
+            $depZip = Join-Path $stage 'cudart.zip'
+            $depSha = Save-VerifiedAsset $dependency $depZip
+            $depDir = Join-Path $stage 'cudart'
+            Expand-Archive -LiteralPath $depZip -DestinationPath $depDir
+            $dlls = @(Get-ChildItem -LiteralPath $depDir -Recurse -File -Filter *.dll)
+            if (-not ($dlls | Where-Object Name -Like 'cudart*.dll') -or -not ($dlls | Where-Object Name -Like 'cublas*.dll')) {
+                throw 'CUDA dependency archive is missing cudart/cublas DLLs.'
+            }
+            # Keep the dependency archive intact (including licenses) and expose its DLLs next to the executable.
+            Copy-Item -LiteralPath $depDir -Destination (Join-Path $runtime 'cuda-dependencies') -Recurse
+            foreach ($dll in $dlls) {
+                $dllTarget = Join-Path $runtime $dll.Name
+                if (Test-Path -LiteralPath $dllTarget) { throw "Duplicate dependency DLL: $($dll.Name)" }
+                Copy-Item -LiteralPath $dll.FullName -Destination $dllTarget
+            }
+            $dependencyRecords += @{ asset = $dependency.name; sha256 = $depSha; source = $dependency.browser_download_url }
+        }
         # Windows PowerShell treats native stderr as errors; llama prints version there.
         $savedPreference = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
@@ -156,7 +196,7 @@ if (-not (Test-Path -LiteralPath $destination)) {
         if ($code -ne 0 -or $versionText -notmatch ('(?m)(?:build\s+|version:\s*)' + $tag.Substring(1) + '\b')) {
             throw "Runtime version check failed: $versionText"
         }
-        @{ tag = $tag; backend = $Backend; asset = $asset.name; sha256 = $sha; source = $asset.browser_download_url; installedUtc = [DateTime]::UtcNow.ToString('o'); versionOutput = $versionText } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runtime 'install.json') -Encoding UTF8
+        @{ tag = $tag; backend = $Backend; asset = $asset.name; sha256 = $sha; source = $asset.browser_download_url; dependencies = $dependencyRecords; installedUtc = [DateTime]::UtcNow.ToString('o'); versionOutput = $versionText } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $runtime 'install.json') -Encoding UTF8
         # Both paths are constructed inside the workspace; destination is a validated bNNNNN tag.
         Move-Item -LiteralPath $runtime -Destination $destination
         Write-Host "Installed: $destination"
