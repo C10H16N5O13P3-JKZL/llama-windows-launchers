@@ -191,7 +191,7 @@ if (-not (Test-Path -LiteralPath $destination)) {
         # Windows PowerShell treats native stderr as errors; llama prints version there.
         $savedPreference = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
-        try { $versionText = (& $servers[0].FullName --version 2>&1 | Out-String); $code = $LASTEXITCODE }
+        try { $versionText = (& $servers[0].FullName --version 2>&1 | ForEach-Object { "$_" } | Out-String); $code = $LASTEXITCODE }
         finally { $ErrorActionPreference = $savedPreference }
         if ($code -ne 0 -or $versionText -notmatch ('(?m)(?:build\s+|version:\s*)' + $tag.Substring(1) + '\b')) {
             throw "Runtime version check failed: $versionText"

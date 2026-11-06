@@ -8,7 +8,10 @@ function Get-LlamaRuntime([string]$Backend, [string]$Version = '') {
     if ($Version -ne 'legacy' -and $Version -notmatch '^b[0-9]+$') { throw "Invalid version: $Version" }
     $dir = if ($Version -eq 'legacy') { Join-Path $root "llama-$Backend" } else { Join-Path $root "llama-versions\$Backend\$Version" }
     $exe = Join-Path $dir 'llama-server.exe'
-    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "Runtime not installed: $exe" }
+    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+        $hint = if ($Version -eq 'legacy') { "manage-llama.bat Update -b $Backend" } else { "manage-llama.bat Install -b $Backend -v $Version" }
+        throw "Runtime not installed: $exe`nInstall it first: $hint"
+    }
     return $exe
 }
 
