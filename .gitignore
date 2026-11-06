@@ -1,0 +1,22 @@
+# Downloaded runtimes and local version selection
+/llama-versions/
+/llama-vulkan/
+/llama-openvino/
+/downloads/
+/models/
+/ov-venv/
+/ovms-pkg/
+/eval/
+*.gguf
+*.gguf.part
+*.part
+*.zip
+*.log
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+.vscode/
+.idea/
+.llama-*-test-*/
