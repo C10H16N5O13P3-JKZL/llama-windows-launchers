@@ -1,13 +1,15 @@
 # llama-server launcher: Vulkan, standalone CPU, or CUDA 12.4.
 # For the NPU use start-npu.ps1 (OpenVINO, different models: LFM3 computes wrongly on the NPU, see README).
 # Usage: powershell -ExecutionPolicy Bypass -File .\start-server.ps1 [-Backend iGPU|Vulkan|CPU|CUDA] [-Port 28080]
+[CmdletBinding(PositionalBinding = $false)]
 param(
+    # Model is the only positional parameter, so a GGUF dropped onto a .bat binds here.
+    [Parameter(Position = 0)][Alias('m')][string]$Model = "$PSScriptRoot\models\LFM3-1.7B-Q8_0.gguf",
     [Alias('b')][ValidateSet("iGPU", "Vulkan", "CPU", "CUDA")]
     [string]$Backend = "iGPU",
     [Alias('p')][int]$Port = 28080,
     [Alias('c')][int]$Ctx = 16384,
     [Alias('addr')][string]$HostAddr = "127.0.0.1",
-    [Alias('m')][string]$Model = "$PSScriptRoot\models\LFM3-1.7B-Q8_0.gguf",
     [Alias('v')][string]$Version = '',
     [Alias('x')][string[]]$ExtraArgs = @(),
     [Alias('d')][switch]$DryRun,
@@ -17,8 +19,10 @@ param(
 )
 if ($Help) {
     @'
-Usage: start-server.bat [-m "E:\models\model.gguf"] [options]
-  -m    -Model      GGUF path (default: models/LFM3-1.7B-Q8_0.gguf).
+Usage: start-server.bat [-m] "E:\models\model.gguf" [options]
+  -m    -Model      GGUF path (default: models/LFM3-1.7B-Q8_0.gguf); -m optional.
+                    Dropping a .gguf onto start-server/start-cpu/start-cuda.bat
+                    passes it here and enables -AutoPort.
   -b    -Backend    iGPU/Vulkan (default), CPU (standalone build), or CUDA.
   -p    -Port       Server port (default: 28080).
   -c    -Ctx        Context size (default: 16384).

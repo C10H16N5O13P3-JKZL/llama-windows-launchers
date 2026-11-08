@@ -58,7 +58,7 @@ CPU、CUDA 有各自的快捷入口；安装一次后即可使用：
 .\start-gguf.bat "E:\模型\model.gguf" -b CUDA
 ```
 
-`start-cpu.bat` / `start-cuda.bat` 接受 `-m` 等普通启动参数，默认固定端口 28080，可加 `-ap`。拖放文件仍使用 `start-gguf.bat`。`-b iGPU` 与 `-b Vulkan` 都选择 Vulkan 运行时；实际使用哪块 Vulkan GPU 取决于 llama.cpp 的设备选择。
+`start-cpu.bat` / `start-cuda.bat` 接受 `-m` 等普通启动参数，默认固定端口 28080，可加 `-ap`。也可以直接把 `.gguf` 拖到 `start-cpu.bat` / `start-cuda.bat` / `start-server.bat` 上，此时自动启用 `-ap`；`-m` 可省略。`-b iGPU` 与 `-b Vulkan` 都选择 Vulkan 运行时；实际使用哪块 Vulkan GPU 取决于 llama.cpp 的设备选择。
 
 **旧版用户注意：** `-b CPU` 现在选择独立 CPU 运行时，需要先执行 `Update -b cpu`。CPU/CUDA 不会隐式回退到 Vulkan 安装。
 

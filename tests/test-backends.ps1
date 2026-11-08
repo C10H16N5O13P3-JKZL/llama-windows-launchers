@@ -50,6 +50,9 @@ try {
         $output = & powershell -NoProfile -ExecutionPolicy Bypass -File "$work\start-server.ps1" -b $backend -m "$work\model.gguf" -d 2>&1
         $text = $output -join "`n"
         if ($LASTEXITCODE -ne 0 -or $text -notmatch "llama-versions\\$backend\\b12345") { throw "Runtime routing failed: $text" }
+        # Drag-and-drop form used by start-cpu/start-cuda.bat: bare path after -Backend.
+        $dropped = & powershell -NoProfile -ExecutionPolicy Bypass -File "$work\start-server.ps1" -Backend $backend -AutoPort "$work\model.gguf" -d 2>&1
+        if ($LASTEXITCODE -ne 0 -or ($dropped -join "`n") -notmatch [regex]::Escape("$work\model.gguf")) { throw "Positional model path failed: $($dropped -join "`n")" }
         if ($backend -eq 'CPU' -and $text -notmatch '--device') { throw 'CPU device flag missing' }
         if ($backend -eq 'CUDA' -and $text -notmatch '-ngl') { throw 'GPU layers missing' }
     }
