@@ -5,12 +5,14 @@ param(
     [Alias('b')][ValidateSet('vulkan','openvino','cpu','cuda')][string]$Backend = 'vulkan',
     [Alias('v')][string]$Version = 'latest',
     [Alias('d')][switch]$DryRun,
-    [Alias('h')][switch]$Help
+    [Alias('h')][switch]$Help,
+    [Alias('i')][switch]$Interactive
 )
 if ($Help -or $Action -eq 'Help') {
     @'
 Usage: manage-llama.bat [Action] [-b vulkan|openvino|cpu|cuda] [-v VERSION] [-d]
        manage-llama.bat Help   (or -Help / -h)
+       manage-llama.bat        (no arguments / double-click: interactive menu)
 Actions:
   List     List local versions (default; offline).
   Check    Check official release and SHA256 (online, no download).
@@ -25,6 +27,7 @@ Options:
   -v  -Version  latest (default) or bNNNNN; Use also accepts legacy.
   -d  -DryRun   Preview Remove only; no deletion.
   -h  -Help     Show help without accessing network or installations.
+  -i  -Interactive  Numbered menu: pick a backend to download, verify and select.
 Examples:
   manage-llama.bat Check -b openvino
   manage-llama.bat Install -v b11970
@@ -35,6 +38,46 @@ are protected. Switch versions and stop the old process before deletion.
 Use .ps1 with the same arguments in PowerShell for execution without pause.
 '@
     return
+}
+if ($Interactive) {
+    . "$PSScriptRoot\tools\llama-runtime.ps1"
+    $menu = [ordered]@{
+        '1' = @('vulkan', 'Vulkan GPU (AMD / Intel / NVIDIA)')
+        '2' = @('cuda', 'NVIDIA CUDA 12.4 (large download)')
+        '3' = @('cpu', 'CPU only')
+        '4' = @('openvino', 'Intel OpenVINO (NPU)')
+    }
+    while ($true) {
+        Write-Host ''
+        Write-Host '========== llama.cpp runtime manager =========='
+        Write-Host 'Enter a number to install the latest official build of a backend.'
+        Write-Host 'It is downloaded, SHA256-verified and selected as that backend''s default.'
+        Write-Host ''
+        foreach ($key in $menu.Keys) {
+            $name, $label = $menu[$key]
+            $pointerFile = Join-Path $PSScriptRoot "llama-versions\$name\current.txt"
+            $selected = if (Test-Path -LiteralPath $pointerFile) { (Get-Content -LiteralPath $pointerFile -Raw).Trim() } else { 'legacy' }
+            $status = try { $null = Get-LlamaRuntime $name $selected; "installed: $selected" } catch { 'not installed' }
+            Write-Host ('  {0}) {1,-9} {2,-36} [{3}]' -f $key, $name, $label, $status)
+        }
+        Write-Host '  0) Exit'
+        Write-Host ''
+        $answer = Read-Host 'Choice'
+        if ($null -eq $answer) { return }  # stdin closed
+        $answer = $answer.Trim()
+        if ($answer -eq '') { continue }
+        if ($answer -in @('0', 'q', 'exit')) { return }
+        if (-not $menu.Contains($answer)) { Write-Host "Invalid choice: $answer" -ForegroundColor Yellow; continue }
+        $name = $menu[$answer][0]
+        Write-Host ''
+        Write-Host "Installing $name ..." -ForegroundColor Cyan
+        try {
+            & $PSCommandPath -Action Update -Backend $name
+            Write-Host "Done: $name" -ForegroundColor Green
+        } catch {
+            Write-Host "Failed to install ${name}: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
 }
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\tools\llama-runtime.ps1"

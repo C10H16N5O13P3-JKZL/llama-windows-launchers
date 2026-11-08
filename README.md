@@ -15,7 +15,9 @@
 
 ## 快速开始：拖入 GGUF
 
-下载或克隆仓库后，在仓库目录打开 PowerShell：
+最简单的方式：**双击 `manage-llama.bat`**，在菜单中输入数字（1 Vulkan、2 CUDA、3 CPU、4 OpenVINO）即可下载、校验并选用该后端的最新官方版本；输入 0 退出。菜单会显示每个后端当前的安装状态，可连续安装多个后端。
+
+也可以在仓库目录打开 PowerShell 用命令行：
 
 ```powershell
 # 首次安装 Vulkan 运行时，并设为默认版本

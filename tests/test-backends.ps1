@@ -23,7 +23,8 @@ try {
         (New-Asset 'llama-b12345-bin-win-cuda-13.4-x64.zip' "$work\fixtures\main.zip"),
         (New-Asset 'llama-b12345-bin-win-cpu-arm64.zip' "$work\fixtures\main.zip")
     ) }
-    function Invoke-RestMethod { param($Uri, $Headers, $TimeoutSec) return $release }
+    $fixtureRelease = $release  # distinct name: the manager assigns its own $release
+    function Invoke-RestMethod { param($Uri, $Headers, $TimeoutSec) return $fixtureRelease }
     function Invoke-WebRequest { param([switch]$UseBasicParsing, $Uri, $Headers, $OutFile, $TimeoutSec) Copy-Item -LiteralPath $Uri -Destination $OutFile }
     foreach ($backend in @('cpu', 'cuda')) {
         & "$work\manage-llama.ps1" Update -b $backend -v b12345
@@ -51,7 +52,16 @@ try {
     try { & "$work\manage-llama.ps1" Update -b cuda -v b12346 }
     catch { if ($_.Exception.Message -notmatch 'SHA256 mismatch') { throw }; $rejected = $true }
     if (-not $rejected -or (Test-Path "$work\llama-versions\cuda\b12346") -or (Get-Content "$work\llama-versions\cuda\current.txt") -ne 'b12345') { throw 'Failed update changed installation/selection' }
-    Write-Host 'PASS: CPU/CUDA asset selection, dependency deployment, manifests, launcher routing, SHA256 failure preserves current version.'
+    # Interactive menu: choose 3 (cpu, latest), then 0 to exit; it must re-select the installed build.
+    $release.tag_name = 'b12345'
+    foreach ($asset in $release.assets) { $asset.name = $asset.name.Replace('b12346', 'b12345') }
+    Remove-Item "$work\llama-versions\cpu\current.txt"
+    $menuAnswers = New-Object 'System.Collections.Generic.Queue[string]'
+    $menuAnswers.Enqueue('3'); $menuAnswers.Enqueue('0')
+    function Read-Host { param($Prompt) $menuAnswers.Dequeue() }
+    & "$work\manage-llama.ps1" -Interactive
+    if ((Get-Content "$work\llama-versions\cpu\current.txt") -ne 'b12345') { throw 'Interactive install did not select latest cpu' }
+    Write-Host 'PASS: CPU/CUDA asset selection, dependency deployment, manifests, launcher routing, SHA256 failure preserves current version, interactive menu.'
 } finally {
     $resolved = [IO.Path]::GetFullPath($work)
     if ((Split-Path $resolved -Parent) -ne [IO.Path]::GetFullPath($PSScriptRoot) -or (Split-Path $resolved -Leaf) -notlike '.work-*') { throw 'Invalid test cleanup path' }
