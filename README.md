@@ -137,7 +137,7 @@ GenAI 辅助服务提供 `/health`、`/v1/models` 和 `/v1/chat/completions`，�
 .\manage-llama.bat Remove -v b11970 -d
 ```
 
-版本号为示例，请按实际发行和安装情况替换。下载只来自 [llama.cpp 官方发行](https://github.com/ggml-org/llama.cpp/releases)。安装会检查包大小、官方 SHA256 摘要和 `llama-server --version`，成功后才保存为完整安装。缺少 SHA256 摘要的发行包会被拒绝。
+版本号为示例，请按实际发行和安装情况替换。下载只来自 [llama.cpp 官方发行](https://github.com/ggml-org/llama.cpp/releases)，优先使用系统自带的 `curl.exe`（显示进度条，断线自动重试并续传），没有时回退到 `Invoke-WebRequest`。安装会检查包大小、官方 SHA256 摘要和 `llama-server --version`，成功后才保存为完整安装。缺少 SHA256 摘要的发行包会被拒绝。
 
 CUDA 安装同时下载同一发行版的 `llama-...-bin-win-cuda-12.4-x64.zip` 与 `cudart-llama...-bin-win-cuda-12.4-x64.zip`，分别校验后将依赖 DLL 部署到程序旁边，完整依赖文件另保留在 `cuda-dependencies/`。两包均成功后才切换，依赖来源和摘要也写入 `install.json`。`Check -b cuda` 会显示两个包及其大小；CUDA 下载明显大于 CPU/Vulkan。当前不提供 CUDA 13.x 或 ARM64 版本选择。
 

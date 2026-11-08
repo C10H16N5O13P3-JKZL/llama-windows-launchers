@@ -115,8 +115,24 @@ function Test-ReleaseAssets($Release) {
     if (@(Get-Assets $Release).Count -ne 1) { return $false }
     return ($Backend -ne 'cuda' -or @(Get-CudaDependencies $Release).Count -eq 1)
 }
+function Save-Asset([string]$Url, [string]$Path) {
+    # curl.exe ships with Windows 10 1803+; much faster than Invoke-WebRequest on PowerShell 5.1.
+    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+        # -C - with --retry resumes a partial file instead of restarting after a dropped connection.
+        & curl.exe --fail --location --progress-bar --retry 5 --retry-delay 3 --connect-timeout 30 `
+            --max-time 3600 -C - -A $headers['User-Agent'] -o $Path $Url
+        if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE): $Url" }
+        return
+    }
+    # Fallback: the progress bar slows Invoke-WebRequest drastically on PowerShell 5.1.
+    $savedProgress = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    try { Invoke-WebRequest -UseBasicParsing -Uri $Url -Headers $headers -OutFile $Path -TimeoutSec 1800 }
+    finally { $ProgressPreference = $savedProgress }
+}
 function Save-VerifiedAsset($Asset, [string]$Path) {
-    Invoke-WebRequest -UseBasicParsing -Uri $Asset.browser_download_url -Headers $headers -OutFile $Path -TimeoutSec 1800
+    Write-Host "Downloading $($Asset.name) ($([math]::Round($Asset.size / 1MB, 1)) MB)"
+    Save-Asset $Asset.browser_download_url $Path
     if ((Get-Item -LiteralPath $Path).Length -ne $Asset.size) { throw "Download size mismatch: $($Asset.name)" }
     $sha = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($Asset.digest -notmatch '^sha256:([a-fA-F0-9]{64})$') { throw "No SHA256 digest: $($Asset.name)" }

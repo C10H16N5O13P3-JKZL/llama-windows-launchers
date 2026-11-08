@@ -26,11 +26,20 @@ try {
     $fixtureRelease = $release  # distinct name: the manager assigns its own $release
     function Invoke-RestMethod { param($Uri, $Headers, $TimeoutSec) return $fixtureRelease }
     function Invoke-WebRequest { param([switch]$UseBasicParsing, $Uri, $Headers, $OutFile, $TimeoutSec) Copy-Item -LiteralPath $Uri -Destination $OutFile }
+    # Shadows the real curl.exe: "-o <file>" then the URL as the last argument.
+    $curlCalls = New-Object System.Collections.ArrayList
+    function curl.exe {
+        $null = $curlCalls.Add($args[-1])
+        $out = $args[[array]::IndexOf($args, '-o') + 1]
+        Copy-Item -LiteralPath $args[-1] -Destination $out
+        $global:LASTEXITCODE = 0
+    }
     foreach ($backend in @('cpu', 'cuda')) {
         & "$work\manage-llama.ps1" Update -b $backend -v b12345
         if ((Get-Content "$work\llama-versions\$backend\current.txt") -ne 'b12345') { throw "Selection failed: $backend" }
     }
-    $cudaDir = "$work\llama-versions\cuda\b12345"
+    if ($curlCalls.Count -ne 3) { throw "Expected 3 curl downloads (cpu, cuda, cudart), got $($curlCalls.Count)" }
+    $cudaDir ="$work\llama-versions\cuda\b12345"
     foreach ($file in @('cudart64_12.dll', 'cublas64_12.dll', 'cuda-dependencies\LICENSE.txt')) {
         if (-not (Test-Path "$cudaDir\$file")) { throw "Missing CUDA dependency: $file" }
     }
