@@ -29,6 +29,8 @@
 
 也可以将 `.gguf` 文件拖到 `start-gguf.bat` 图标上，或双击该脚本后输入完整路径。
 
+`start-gguf.bat` 默认**自动选择后端**：检测到 NVIDIA 显卡且已安装 CUDA 运行时则用 CUDA，否则依次尝试 Vulkan、CPU，只会选已安装的运行时，并在控制台显示选择结果。用 `-b` 可手动指定；其他启动器也可用 `-b Auto`。
+
 默认从 **28080** 开始寻找可用端口，最多尝试 200 个连续端口。等待服务器成功监听后，打开控制台显示的地址，例如 `http://127.0.0.1:28080`。OpenAI 兼容 API 地址为该地址加 `/v1`。
 
 ```powershell
@@ -183,7 +185,7 @@ llama-cuda/             可选的原始 CUDA 安装（含运行库）
 |---|---|---|
 | `-h` | `-Help` | 所有入口 |
 | `-a` | `-Action` | 版本管理；命令也可直接作为首参数 |
-| `-b` | `-Backend` | 管理器：vulkan/openvino/cpu/cuda；普通启动器：iGPU/Vulkan/CPU/CUDA |
+| `-b` | `-Backend` | 管理器：vulkan/openvino/cpu/cuda；普通启动器：Auto/iGPU/Vulkan/CPU/CUDA（拖入入口默认 Auto） |
 | `-v` | `-Version` | 管理器、GGUF 启动器 |
 | `-m` | `-Model` | 普通和 NPU 启动器；拖入入口直接传路径 |
 | `-p` | `-Port` | 启动器 |

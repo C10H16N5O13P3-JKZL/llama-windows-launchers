@@ -56,6 +56,17 @@ try {
         if ($backend -eq 'CPU' -and $text -notmatch '--device') { throw 'CPU device flag missing' }
         if ($backend -eq 'CUDA' -and $text -notmatch '-ngl') { throw 'GPU layers missing' }
     }
+    # Auto backend (start-gguf.bat): CPU and CUDA are installed, Vulkan is not.
+    $hasNvidia = [bool](Get-CimInstance Win32_VideoController | Where-Object { "$($_.AdapterCompatibility) $($_.Name)" -match 'NVIDIA' })
+    $expected = if ($hasNvidia) { 'CUDA' } else { 'CPU' }
+    $text = (& powershell -NoProfile -ExecutionPolicy Bypass -File "$work\start-server.ps1" -AutoBackend "$work\model.gguf" -d 2>&1) -join "`n"
+    if ($LASTEXITCODE -ne 0 -or $text -notmatch "Auto-selected backend: $expected" -or $text -notmatch "llama-versions\\$($expected.ToLower())\\b12345") { throw "Auto backend failed (expected $expected): $text" }
+    $text = (& powershell -NoProfile -ExecutionPolicy Bypass -File "$work\start-server.ps1" -AutoBackend -b CPU "$work\model.gguf" -d 2>&1) -join "`n"
+    if ($text -match 'Auto-selected' -or $text -notmatch 'Backend: CPU') { throw "Explicit -b must override AutoBackend: $text" }
+    $ErrorActionPreference = 'Continue'  # the child fails on purpose; its stderr must not throw here
+    $text = (& powershell -NoProfile -ExecutionPolicy Bypass -File "$work\start-server.ps1" -b Auto -v b99999 "$work\model.gguf" -d 2>&1 | ForEach-Object { "$_" }) -join "`n"
+    $ErrorActionPreference = 'Stop'
+    if ($LASTEXITCODE -eq 0 -or $text -notmatch 'No runtime installed') { throw "Auto with missing runtimes must fail clearly: $text" }
     # A corrupt dependency must not publish a new installation or alter selection.
     $release.tag_name = 'b12346'
     foreach ($asset in $release.assets) { $asset.name = $asset.name.Replace('b12345', 'b12346') }

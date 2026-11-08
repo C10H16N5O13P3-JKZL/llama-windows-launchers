@@ -5,8 +5,10 @@
 param(
     # Model is the only positional parameter, so a GGUF dropped onto a .bat binds here.
     [Parameter(Position = 0)][Alias('m')][string]$Model = "$PSScriptRoot\models\LFM3-1.7B-Q8_0.gguf",
-    [Alias('b')][ValidateSet("iGPU", "Vulkan", "CPU", "CUDA")]
+    [Alias('b')][ValidateSet("Auto", "iGPU", "Vulkan", "CPU", "CUDA")]
     [string]$Backend = "iGPU",
+    # Use Auto when -Backend is not given (start-gguf.bat); an explicit -Backend still wins.
+    [Alias('ab')][switch]$AutoBackend,
     [Alias('p')][int]$Port = 28080,
     [Alias('c')][int]$Ctx = 16384,
     [Alias('addr')][string]$HostAddr = "127.0.0.1",
@@ -23,7 +25,10 @@ Usage: start-server.bat [-m] "E:\models\model.gguf" [options]
   -m    -Model      GGUF path (default: models/LFM3-1.7B-Q8_0.gguf); -m optional.
                     Dropping a .gguf onto start-server/start-cpu/start-cuda.bat
                     passes it here and enables -AutoPort.
-  -b    -Backend    iGPU/Vulkan (default), CPU (standalone build), or CUDA.
+  -b    -Backend    iGPU/Vulkan (default), CPU (standalone build), CUDA, or Auto.
+                    Auto: CUDA if an NVIDIA GPU is present and CUDA is installed,
+                    else Vulkan, else CPU; only installed runtimes are chosen.
+                    start-gguf.bat uses Auto unless -b is given.
   -p    -Port       Server port (default: 28080).
   -c    -Ctx        Context size (default: 16384).
   -addr -HostAddr   Bind address (default: 127.0.0.1).
@@ -45,6 +50,24 @@ External models are read in place. Relative paths use the working directory.
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\tools\llama-runtime.ps1"
 . "$PSScriptRoot\tools\llama-port.ps1"
+if ($AutoBackend -and -not $PSBoundParameters.ContainsKey('Backend')) { $Backend = 'Auto' }
+if ($Backend -eq 'Auto') {
+    $gpus = @(try { Get-CimInstance Win32_VideoController -ErrorAction Stop } catch { @() })
+    $hasNvidia = [bool]($gpus | Where-Object { "$($_.AdapterCompatibility) $($_.Name)" -match 'NVIDIA' })
+    $candidates = @(if ($hasNvidia) { 'CUDA' }) + @('Vulkan', 'CPU')
+    $chosen = $null  # $Backend is ValidateSet-constrained, so it cannot hold $null
+    foreach ($candidate in $candidates) {
+        $name = switch ($candidate) { 'CPU' { 'cpu' }; 'CUDA' { 'cuda' }; default { 'vulkan' } }
+        try { $null = Get-LlamaRuntime $name $Version; $chosen = $candidate; break } catch { }
+    }
+    if (-not $chosen) {
+        $which = if ($Version) { "version $Version of any backend" } else { 'any backend' }
+        throw "No runtime installed for $which (tried: $($candidates -join ', ')).`nRun manage-llama.bat and pick one: CUDA for NVIDIA GPUs, Vulkan for other GPUs, or CPU."
+    }
+    $Backend = $chosen
+    $gpuNote =if ($hasNvidia) { 'NVIDIA GPU detected' } else { 'no NVIDIA GPU detected' }
+    Write-Host "Auto-selected backend: $Backend ($gpuNote; tried $($candidates -join ' > '))"
+}
 $runtimeBackend = switch ($Backend) { 'CPU' { 'cpu' }; 'CUDA' { 'cuda' }; default { 'vulkan' } }
 $exe = Get-LlamaRuntime $runtimeBackend $Version
 $Model = Resolve-Gguf $Model
