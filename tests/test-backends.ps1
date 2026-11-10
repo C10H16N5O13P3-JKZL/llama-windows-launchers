@@ -131,6 +131,14 @@ try {
     if ((Select-LlamaBackend) -ne 'cpu') { throw 'Backend menu: number' }
     $pickAnswers.Enqueue('')
     if ((Select-LlamaBackend) -notin @('cuda', 'cpu')) { throw 'Backend menu: Enter must pick Auto' }
+    # Parameter step: Enter keeps the default, out-of-range input is asked again, quotes group arguments.
+    $pickAnswers.Enqueue('')
+    if ((Read-LlamaNumber 'Context size' 16384 1 99999) -ne 16384) { throw 'Number prompt: Enter' }
+    $pickAnswers.Enqueue('0'); $pickAnswers.Enqueue('abc'); $pickAnswers.Enqueue(' 8192 ')
+    if ((Read-LlamaNumber 'Context size' 16384 1 99999) -ne 8192) { throw 'Number prompt: value' }
+    $split = @(Split-LlamaArguments '--temp 0.7  --system-prompt "be brief"')
+    if ($split.Count -ne 4 -or $split[3] -ne 'be brief') { throw "Argument split: $($split -join '|')" }
+    if (@(Split-LlamaArguments '').Count -ne 0) { throw 'Argument split: empty' }
     # Configured default model is preselected when asking.
     $pickAnswers.Enqueue('')
     if ((Select-LlamaModel @{ defaultModel = "$work\model.gguf"; modelsDir = "$work\pick" } -AlwaysAsk) -ne "$work\model.gguf") { throw 'Model picker: default' }

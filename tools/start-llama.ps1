@@ -26,8 +26,9 @@ param(
 if ($Help) {
     @'
 Usage: start-llama.bat ["E:\models\model.gguf"] [options]
-Double-click, or drop a .gguf on it: asks for the model, backend and mode
-that were not given. Press Enter to accept the first choice.
+Double-click, or drop a .gguf on it: asks for the model, backend, mode and
+parameters (context size, port, extra llama arguments) that were not given.
+Press Enter to accept the first choice or the default.
   -m    -Model      GGUF path; -m optional. Without a model: pick from the
                     models folder or type/drag a path (defaultModel from
                     launcher.config.json is preselected).
@@ -111,6 +112,26 @@ if ($Ask -and -not $PSBoundParameters.ContainsKey('Mode')) {
 if (-not $Port) { $Port = $config.port }
 if (-not $Ctx) { $Ctx = if ($spec.DefaultCtx) { $spec.DefaultCtx } else { $config.ctx } }
 if ($Port -lt 1 -or $Port -gt 65535 -or $Ctx -lt 1) { throw 'Invalid Port or Ctx.' }
+
+# 4. Parameters: one Enter keeps every default; only what was not given on the command line is offered.
+if ($Ask) {
+    $askCtx = -not $PSBoundParameters.ContainsKey('Ctx')
+    $askPort = $Mode -eq 'Server' -and -not $PSBoundParameters.ContainsKey('Port')
+    $askExtra = -not $PSBoundParameters.ContainsKey('ExtraArgs')
+    if ($askCtx -or $askPort -or $askExtra) {
+        $summary = "context $Ctx"
+        if ($Mode -eq 'Server') { $summary += ", port $Port" }
+        $choice = Read-LlamaChoice 'Parameters:' @(
+            "Defaults  - $summary",
+            'Customize - context size, port, extra llama arguments')
+        if ($choice -eq 1) {
+            Write-Host ''
+            if ($askCtx) { $Ctx = Read-LlamaNumber 'Context size' $Ctx 1 ([int]::MaxValue) }
+            if ($askPort) { $Port = Read-LlamaNumber 'Port' $Port 1 65535 }
+            if ($askExtra) { $ExtraArgs = @(Split-LlamaArguments (Read-Host 'Extra llama arguments, e.g. --temp 0.7 (Enter = none)')) }
+        }
+    }
+}
 
 function Set-BackendEnvironment {
     foreach ($name in @($spec.ClearEnv)) { if ($name) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue } }

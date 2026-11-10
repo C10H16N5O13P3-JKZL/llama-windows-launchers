@@ -156,6 +156,24 @@ function Read-LlamaChoice([string]$Title, [string[]]$Labels) {
     }
 }
 
+# Number prompt; Enter keeps the default.
+function Read-LlamaNumber([string]$Label, [int]$Default, [int]$Min, [int]$Max) {
+    while ($true) {
+        $answer = Read-Host "$Label (Enter = $Default)"
+        if ($null -eq $answer -or $answer.Trim() -eq '') { return $Default }
+        $number = 0
+        if ([int]::TryParse($answer.Trim(), [ref]$number) -and $number -ge $Min -and $number -le $Max) { return $number }
+        Write-Host "Enter a number from $Min to $Max." -ForegroundColor Yellow
+    }
+}
+
+# Split a typed argument line on spaces; "double quotes" keep spaces inside one argument.
+function Split-LlamaArguments([string]$Line) {
+    if (-not $Line) { return @() }
+    return @([regex]::Matches($Line, '"([^"]*)"|(\S+)') |
+        ForEach-Object { if ($_.Groups[1].Success) { $_.Groups[1].Value } else { $_.Groups[2].Value } })
+}
+
 # Interactive backend choice among installed runtimes. Returns a registry key, or '' when none is
 # installed. A single installed backend is used without asking.
 function Select-LlamaBackend([string]$Version = '') {
@@ -198,7 +216,7 @@ function Select-LlamaModel($Config, [switch]$AlwaysAsk) {
             Sort-Object FullName)
     }
     if (-not (Test-LlamaInteractive)) {
-        throw "No model given. Pass a GGUF path, e.g. start-gguf.bat `"E:\models\model.gguf`", or set defaultModel in launcher.config.json."
+        throw "No model given. Pass a GGUF path, e.g. start-llama.bat `"E:\models\model.gguf`", or set defaultModel in launcher.config.json."
     }
     Write-Host ''
     if ($found.Count) {
