@@ -1,7 +1,7 @@
 # Start an OpenAI-compatible chat server on the Intel NPU.
 # Only models verified to compute correctly on this NPU are offered; the model is downloaded on first use.
 #   lfm2.5   (default) -> llama-server from llama-openvino (llama.cpp OpenVINO backend), GGUF, has a web UI
-#   qwen3-8b           -> OpenVINO GenAI + tools\ov_server.py (2x faster than llama-server for this model on NPU)
+#   qwen3-8b           -> OpenVINO GenAI + ov_server.py (2x faster than llama-server for this model on NPU)
 # Usage:  powershell -ExecutionPolicy Bypass -File .\start-npu.ps1 [-Model lfm2.5|qwen3-8b|<file.gguf>|<IR dir>] [-Port 28081]
 param(
     [Alias('m')][string]$Model = "lfm2.5",
@@ -17,7 +17,8 @@ param(
 )
 if ($Help) {
     @'
-Usage: start-npu.bat [-m MODEL] [options]
+Usage: shortcuts\start-npu.bat [-m MODEL] [options]
+For your own GGUF files on the NPU, start-llama.bat -b NPU does the same.
   -m    -Model        lfm2.5 (default), qwen3-8b, GGUF path or IR folder.
   -p    -Port         Server port (default: 28081).
   -addr -HostAddr     Bind address (default: 127.0.0.1).
@@ -31,7 +32,7 @@ Usage: start-npu.bat [-m MODEL] [options]
 Examples:
   start-npu.bat -m "E:\models\model.gguf" -v legacy -c 4096
   start-npu.bat -m qwen3-8b -mp 4096 -mr 2048
-  .\start-npu.ps1 -x @('--swa-full')
+  tools\start-npu.ps1 -x @('--swa-full')
 Default version: selected OpenVINO runtime. qwen3-8b uses GenAI instead.
 Aliases download from Hugging Face into the models folder on first use;
 set HF_ENDPOINT to use a mirror. Folders follow launcher.config.json.
@@ -41,7 +42,7 @@ NPU support and output quality depend on the model and runtime.
 }
 
 $ErrorActionPreference = 'Stop'
-. "$PSScriptRoot\tools\llama-runtime.ps1"
+. "$PSScriptRoot\llama-runtime.ps1"
 if ($Port -lt 1 -or $Port -gt 65535 -or $Ctx -lt 1) { throw 'Invalid Port or Ctx.' }
 $config = Get-LlamaConfig
 $modelsDir = $config.modelsDir
@@ -57,16 +58,9 @@ $ir = @{
 $key = $Model.ToLower()
 
 function Start-LlamaNpu([string]$path) {
-    $path = Resolve-Gguf $path
-    $exe = Get-LlamaRuntime 'openvino' $Version
-    $launchArgs = @('-m', $path, '-c', "$Ctx") + $LlamaBackends.openvino.LaunchArgs + @('--host', $HostAddr, '--port', "$Port") + $ExtraArgs
-    Write-Host "Runtime: $exe"
-    if ($DryRun) { $launchArgs | ConvertTo-Json; return }
-    $env:GGML_OPENVINO_DEVICE = "NPU"
-    # GGML_OPENVINO_CACHE_DIR breaks NPU compilation ("WeightlessCacheAttribute"), keep it unset
-    Remove-Item Env:GGML_OPENVINO_CACHE_DIR -ErrorAction SilentlyContinue
-    Write-Host "NPU llama-server: $path  ctx $Ctx  http://${HostAddr}:$Port  (first start compiles for the NPU, ~30 s)"
-    & $exe @launchArgs
+    # GGUF on the NPU is the unified launcher with the OpenVINO backend.
+    & "$PSScriptRoot\start-llama.ps1" -Model $path -Backend NPU -Port $Port -Ctx $Ctx -HostAddr $HostAddr `
+        -Version $Version -ExtraArgs $ExtraArgs -DryRun:$DryRun
     exit $LASTEXITCODE
 }
 
@@ -103,7 +97,7 @@ function Start-GenaiNpu([string]$dir) {
         }
     }
     Write-Host "NPU OpenVINO GenAI server: $dir  http://${HostAddr}:$Port/v1  (first start compiles for the NPU, ~30-90 s)"
-    & $py "$PSScriptRoot\tools\ov_server.py" --model $dir --device NPU --host $HostAddr --port $Port `
+    & $py "$PSScriptRoot\ov_server.py" --model $dir --device NPU --host $HostAddr --port $Port `
         --max-prompt $MaxPrompt --max-response $MaxResponse
     exit $LASTEXITCODE
 }

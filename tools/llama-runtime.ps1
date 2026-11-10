@@ -3,6 +3,8 @@
 
 # One entry per runtime; adding or retargeting a backend (e.g. another CUDA version) is a change here only.
 # Asset/Dependency match official llama.cpp release archive names. Order is the menu and List order.
+# LaunchArgs apply to server and chat, ServerArgs to llama-server only. Optional: DefaultCtx, Env,
+# ClearEnv (environment for the launched process) and Note (shown before starting).
 $LlamaBackends = [ordered]@{
     vulkan   = @{
         Name = 'Vulkan'; Label = 'Vulkan GPU (AMD / Intel / NVIDIA)'
@@ -26,8 +28,15 @@ $LlamaBackends = [ordered]@{
     openvino = @{
         Name = 'OpenVINO'; Label = 'Intel OpenVINO (NPU)'
         Asset = '^llama-b[0-9]+-bin-win-openvino(?:-[0-9.]+)?-x64\.zip$'
+        LaunchArgs = @()
         # The NPU backend does not support parallel sequences.
-        LaunchArgs = @('-np', '1')
+        ServerArgs = @('-np', '1')
+        # The NPU attends over the whole context every token: keep it small unless -c is given.
+        DefaultCtx = 4096
+        Env = @{ GGML_OPENVINO_DEVICE = 'NPU' }
+        # GGML_OPENVINO_CACHE_DIR breaks NPU compilation ("WeightlessCacheAttribute"); keep it unset.
+        ClearEnv = @('GGML_OPENVINO_CACHE_DIR')
+        Note = 'Intel NPU: the first start compiles the model for the NPU (about 30 s).'
     }
 }
 
@@ -69,9 +78,9 @@ function Get-LlamaConfig {
     return $config
 }
 
-# Launcher spellings (iGPU, Vulkan, CPU, CUDA) -> registry key.
+# Launcher spellings (iGPU, Vulkan, CPU, CUDA, NPU, OpenVINO) -> registry key.
 function ConvertTo-LlamaBackend([string]$Name) {
-    $key = if ($Name -eq 'iGPU') { 'vulkan' } else { $Name.ToLowerInvariant() }
+    $key = switch ($Name) { 'iGPU' { 'vulkan' } 'NPU' { 'openvino' } default { $Name.ToLowerInvariant() } }
     if (-not $LlamaBackends.Contains($key)) { throw "Unknown backend: $Name" }
     return $key
 }
@@ -131,6 +140,38 @@ function Find-LlamaBackend([string]$Version = '') {
 # Prompts are only shown when a person can answer them (not under CI, pipes or redirected input).
 function Test-LlamaInteractive { return (-not [Console]::IsInputRedirected) }
 
+# Numbered menu; returns the zero-based index. Enter picks the first entry.
+function Read-LlamaChoice([string]$Title, [string[]]$Labels) {
+    Write-Host ''
+    Write-Host $Title
+    for ($i = 0; $i -lt $Labels.Count; $i++) { Write-Host ('  {0}) {1}' -f ($i + 1), $Labels[$i]) }
+    while ($true) {
+        $answer = Read-Host 'Number (Enter = 1)'
+        if ($null -eq $answer) { return 0 }  # stdin closed
+        $answer = $answer.Trim()
+        if ($answer -eq '') { return 0 }
+        $index = 0
+        if ([int]::TryParse($answer, [ref]$index) -and $index -ge 1 -and $index -le $Labels.Count) { return ($index - 1) }
+        Write-Host "Invalid choice: $answer" -ForegroundColor Yellow
+    }
+}
+
+# Interactive backend choice among installed runtimes. Returns a registry key, or '' when none is
+# installed. A single installed backend is used without asking.
+function Select-LlamaBackend([string]$Version = '') {
+    $installed = @($LlamaBackends.Keys | Where-Object { try { $null = Get-LlamaRuntime $_ $Version; $true } catch { $false } })
+    if ($installed.Count -le 1) { return [string]($installed | Select-Object -First 1) }
+    $keys = @(); $labels = @()
+    $auto = (Find-LlamaBackend $Version).Backend
+    if ($auto) { $keys += $auto; $labels += "Auto     - $($LlamaBackends[$auto].Name) on this machine" }
+    foreach ($key in $installed) {
+        $tag = if ($Version) { $Version } else { Get-LlamaCurrent $key }
+        $keys += $key
+        $labels += ('{0,-8} - {1} [{2}]' -f $LlamaBackends[$key].Name, $LlamaBackends[$key].Label, $tag)
+    }
+    return $keys[(Read-LlamaChoice 'Backend:' $labels)]
+}
+
 function Resolve-Gguf([string]$Path) {
     $item = Get-Item -LiteralPath $Path -ErrorAction Stop
     if ($item.PSIsContainer -or $item.Extension -ne '.gguf') { throw "Expected a GGUF file: $Path" }
@@ -146,8 +187,9 @@ function Resolve-Gguf([string]$Path) {
 
 # Used when no model was passed: the configured default, else ask (numbered list of the models
 # folder, or a pasted/dragged path). Never blocks on a prompt when stdin is not a console.
-function Select-LlamaModel($Config) {
-    if ($Config.defaultModel) { return $Config.defaultModel }
+function Select-LlamaModel($Config, [switch]$AlwaysAsk) {
+    $default = $Config.defaultModel
+    if ($default -and -not $AlwaysAsk) { return $default }
     $found = @()
     if (Test-Path -LiteralPath $Config.modelsDir -PathType Container) {
         # Skip vision projectors and all but the first shard of a split model.
@@ -165,15 +207,19 @@ function Select-LlamaModel($Config) {
             $relative = $found[$i].FullName.Substring($Config.modelsDir.TrimEnd('\').Length + 1)
             Write-Host ('  {0,2}) {1}  ({2:N1} GB)' -f ($i + 1), $relative, ($found[$i].Length / 1GB))
         }
-        $prompt = 'Number (Enter = 1), or a full GGUF path'
+        if (-not $default) { $default = $found[0].FullName }
+        $prompt = "Number, or a full GGUF path (Enter = $(Split-Path $default -Leaf))"
+    } elseif ($default) {
+        $prompt = "GGUF full path (Enter = $(Split-Path $default -Leaf))"
     } else {
+        Write-Host "No GGUF files in $($Config.modelsDir)."
         $prompt = 'GGUF full path (you can drag the file into this window)'
     }
     while ($true) {
         $answer = Read-Host $prompt
         if ($null -eq $answer) { throw 'No model given.' }  # stdin closed
         $answer = $answer.Trim().Trim('"').Trim()
-        if ($answer -eq '') { if ($found.Count) { return $found[0].FullName }; continue }
+        if ($answer -eq '') { if ($default) { return $default }; continue }
         $index = 0
         if ([int]::TryParse($answer, [ref]$index) -and $index -ge 1 -and $index -le $found.Count) { return $found[$index - 1].FullName }
         if (Test-Path -LiteralPath $answer -PathType Leaf) { return $answer }

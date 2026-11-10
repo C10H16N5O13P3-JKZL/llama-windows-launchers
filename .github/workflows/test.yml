@@ -14,6 +14,6 @@ jobs:
       - name: Scripts are ASCII-only
         shell: bash
         run: |
-          if LC_ALL=C grep -n '[^[:print:][:space:]]' *.ps1 *.bat tools/*.ps1 tests/*.ps1; then
+          if LC_ALL=C grep -n "[^[:print:][:space:]]" *.bat shortcuts/*.bat tools/*.ps1 tests/*.ps1; then
             echo "Non-ASCII characters break BOM-less scripts on Windows PowerShell 5.1"; exit 1
           fi

@@ -37,12 +37,12 @@ Remove requires an explicit version. Selected/running versions and legacy
 are protected. Switch versions and stop the old process before deletion.
 Runtimes are stored in the data directory: this folder by default, or
 dataDir in launcher.config.json, or the LLAMA_LAUNCHER_HOME variable.
-Use .ps1 with the same arguments in PowerShell for execution without pause.
+Use tools\manage-llama.ps1 with the same arguments for execution without pause.
 '@
     return
 }
 $ErrorActionPreference = 'Stop'
-. "$PSScriptRoot\tools\llama-runtime.ps1"
+. "$PSScriptRoot\llama-runtime.ps1"
 $config = Get-LlamaConfig
 
 if ($Interactive) {
