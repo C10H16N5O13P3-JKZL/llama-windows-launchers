@@ -14,7 +14,7 @@ Usage: manage-llama.bat [Action] [-b vulkan|openvino|cpu|cuda] [-v VERSION] [-d]
        manage-llama.bat Help   (or -Help / -h)
        manage-llama.bat        (no arguments / double-click: interactive menu)
 Actions:
-  List     List local versions (default; offline).
+  List     List local versions (offline). All backends unless -b is given.
   Check    Check official release and SHA256 (online, no download).
   Install  Download and verify a version without selecting it.
   Update   Download, verify and select a version.
@@ -35,30 +35,30 @@ Examples:
   manage-llama.bat Remove -b vulkan -v b11970 -d
 Remove requires an explicit version. Selected/running versions and legacy
 are protected. Switch versions and stop the old process before deletion.
-Use .ps1 with the same arguments in PowerShell for execution without pause.
+Runtimes are stored in the data directory: this folder by default, or
+dataDir in launcher.config.json, or the LLAMA_LAUNCHER_HOME variable.
+Use tools\manage-llama.ps1 with the same arguments for execution without pause.
 '@
     return
 }
+$ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\llama-runtime.ps1"
+$config = Get-LlamaConfig
+
 if ($Interactive) {
-    . "$PSScriptRoot\tools\llama-runtime.ps1"
-    $menu = [ordered]@{
-        '1' = @('vulkan', 'Vulkan GPU (AMD / Intel / NVIDIA)')
-        '2' = @('cuda', 'NVIDIA CUDA 12.4 (large download)')
-        '3' = @('cpu', 'CPU only')
-        '4' = @('openvino', 'Intel OpenVINO (NPU)')
-    }
+    $names = @($LlamaBackends.Keys)
     while ($true) {
         Write-Host ''
         Write-Host '========== llama.cpp runtime manager =========='
         Write-Host 'Enter a number to install the latest official build of a backend.'
         Write-Host 'It is downloaded, SHA256-verified and selected as that backend''s default.'
+        Write-Host "Data directory: $($config.dataDir)"
         Write-Host ''
-        foreach ($key in $menu.Keys) {
-            $name, $label = $menu[$key]
-            $pointerFile = Join-Path $PSScriptRoot "llama-versions\$name\current.txt"
-            $selected = if (Test-Path -LiteralPath $pointerFile) { (Get-Content -LiteralPath $pointerFile -Raw).Trim() } else { 'legacy' }
+        for ($i = 0; $i -lt $names.Count; $i++) {
+            $name = $names[$i]
+            $selected = Get-LlamaCurrent $name
             $status = try { $null = Get-LlamaRuntime $name $selected; "installed: $selected" } catch { 'not installed' }
-            Write-Host ('  {0}) {1,-9} {2,-36} [{3}]' -f $key, $name, $label, $status)
+            Write-Host ('  {0}) {1,-9} {2,-36} [{3}]' -f ($i + 1), $name, $LlamaBackends[$name].Label, $status)
         }
         Write-Host '  0) Exit'
         Write-Host ''
@@ -67,8 +67,12 @@ if ($Interactive) {
         $answer = $answer.Trim()
         if ($answer -eq '') { continue }
         if ($answer -in @('0', 'q', 'exit')) { return }
-        if (-not $menu.Contains($answer)) { Write-Host "Invalid choice: $answer" -ForegroundColor Yellow; continue }
-        $name = $menu[$answer][0]
+        $index = 0
+        if (-not [int]::TryParse($answer, [ref]$index) -or $index -lt 1 -or $index -gt $names.Count) {
+            Write-Host "Invalid choice: $answer" -ForegroundColor Yellow
+            continue
+        }
+        $name = $names[$index - 1]
         Write-Host ''
         Write-Host "Installing $name ..." -ForegroundColor Cyan
         try {
@@ -79,12 +83,30 @@ if ($Interactive) {
         }
     }
 }
-$ErrorActionPreference = 'Stop'
-. "$PSScriptRoot\tools\llama-runtime.ps1"
-$base = Join-Path $PSScriptRoot "llama-versions\$Backend"
-$pointer = Join-Path $base 'current.txt'
-$current = if (Test-Path -LiteralPath $pointer) { (Get-Content -LiteralPath $pointer -Raw).Trim() } else { 'legacy' }
+
 if ($DryRun -and $Action -ne 'Remove') { throw 'DryRun is only supported for Remove.' }
+
+if ($Action -eq 'List') {
+    $names = if ($PSBoundParameters.ContainsKey('Backend')) { @($Backend) } else { @($LlamaBackends.Keys) }
+    $count = 0
+    foreach ($name in $names) {
+        $selected = Get-LlamaCurrent $name
+        foreach ($tag in Get-LlamaInstalledVersions $name) {
+            $count++
+            [pscustomobject]@{ Backend = $name; Version = $tag; Active = ($tag -eq $selected); Executable = (Get-LlamaRuntime $name $tag) }
+        }
+    }
+    if ($count -eq 0) {
+        $what = if ($names.Count -eq 1) { "$Backend versions" } else { 'runtimes' }
+        Write-Host "No local $what in $($config.dataDir). Run: manage-llama.bat Update -b $Backend"
+    }
+    return
+}
+
+$spec = $LlamaBackends[$Backend]
+$base = Get-LlamaBackendDir $Backend
+$pointer = Join-Path $base 'current.txt'
+$current = Get-LlamaCurrent $Backend
 
 function Set-Current([string]$Tag) {
     $null = Get-LlamaRuntime $Backend $Tag
@@ -100,20 +122,15 @@ function Set-Current([string]$Tag) {
     Write-Host "Selected $Backend / $Tag. Restart the server to apply."
 }
 function Get-Assets($Release) {
-    $pattern = switch ($Backend) {
-        'vulkan' { '^llama-b[0-9]+-bin-win-vulkan-x64\.zip$' }
-        'openvino' { '^llama-b[0-9]+-bin-win-openvino(?:-[0-9.]+)?-x64\.zip$' }
-        'cpu' { '^llama-b[0-9]+-bin-win-cpu-x64\.zip$' }
-        'cuda' { '^llama-b[0-9]+-bin-win-cuda-12\.4-x64\.zip$' }
-    }
-    @($Release.assets | Where-Object { $_.name -match $pattern })
+    @($Release.assets | Where-Object { $_.name -match $spec.Asset })
 }
-function Get-CudaDependencies($Release) {
-    @($Release.assets | Where-Object { $_.name -match '^cudart-llama(?:-b[0-9]+)?-bin-win-cuda-12\.4-x64\.zip$' })
+function Get-Dependencies($Release) {
+    if (-not $spec.Dependency) { return @() }
+    @($Release.assets | Where-Object { $_.name -match $spec.Dependency })
 }
 function Test-ReleaseAssets($Release) {
     if (@(Get-Assets $Release).Count -ne 1) { return $false }
-    return ($Backend -ne 'cuda' -or @(Get-CudaDependencies $Release).Count -eq 1)
+    return (-not $spec.Dependency -or @(Get-Dependencies $Release).Count -eq 1)
 }
 function Save-Asset([string]$Url, [string]$Path) {
     # curl.exe ships with Windows 10 1803+; much faster than Invoke-WebRequest on PowerShell 5.1.
@@ -140,22 +157,11 @@ function Save-VerifiedAsset($Asset, [string]$Path) {
     return $sha
 }
 
-if ($Action -eq 'List') {
-    $tags = @()
-    if (Test-Path -LiteralPath (Join-Path $PSScriptRoot "llama-$Backend\llama-server.exe") -PathType Leaf) { $tags += 'legacy' }
-    if (Test-Path -LiteralPath $base) { $tags += @(Get-ChildItem -LiteralPath $base -Directory | Where-Object Name -Match '^b[0-9]+$' | Select-Object -ExpandProperty Name) }
-    foreach ($tag in $tags) {
-        $exe = Get-LlamaRuntime $Backend $tag
-        [pscustomobject]@{ Backend = $Backend; Version = $tag; Active = ($tag -eq $current); Executable = $exe }
-    }
-    if ($tags.Count -eq 0) { Write-Host "No local $Backend versions. Run: manage-llama.bat Update -b $Backend" }
-    return
-}
 if ($Action -eq 'Use') { Set-Current $Version; return }
 if ($Action -eq 'Remove') {
     if ($Version -notmatch '^b[0-9]+$') { throw 'Remove requires an explicit bNNNNN version; legacy cannot be removed.' }
     if ($Version -eq $current) { throw "Cannot remove selected version $Version. Use another version or legacy first." }
-    $managedRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'llama-versions'))
+    $managedRoot = [IO.Path]::GetFullPath((Split-Path $base -Parent))
     $target = [IO.Path]::GetFullPath((Join-Path $base $Version))
     $expectedParent = [IO.Path]::GetFullPath($base).TrimEnd('\') + '\'
     if (-not $target.StartsWith($expectedParent, [StringComparison]::OrdinalIgnoreCase) -or
@@ -187,6 +193,8 @@ if ($Action -eq 'Remove') {
     Write-Host "Removed $Backend / $Version"
     return
 }
+
+# Check / Install / Update: resolve the release online.
 if ($Version -ne 'latest' -and $Version -notmatch '^b[0-9]+$') { throw 'Version must be latest or bNNNNN.' }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $headers = @{ 'User-Agent' = 'local-llama-manager'; Accept = 'application/vnd.github+json' }
@@ -206,11 +214,8 @@ if ($Version -eq 'latest') {
 $assets = @(Get-Assets $release)
 if ($assets.Count -ne 1) { throw 'Release must contain exactly one matching Windows x64 archive.' }
 $asset = $assets[0]
-$dependencies = @()
-if ($Backend -eq 'cuda') {
-    $dependencies = @(Get-CudaDependencies $release)
-    if ($dependencies.Count -ne 1) { throw 'CUDA release must contain exactly one matching CUDA 12.4 cudart archive.' }
-}
+$dependencies = @(Get-Dependencies $release)
+if ($spec.Dependency -and $dependencies.Count -ne 1) { throw "Release must contain exactly one matching dependency archive for $Backend." }
 $tag = [string]$release.tag_name
 if ($tag -notmatch '^b[0-9]+$') { throw 'Unexpected release tag.' }
 Write-Host "Selected release: $tag / $($asset.name) (current: $current)"
@@ -230,16 +235,16 @@ if (-not (Test-Path -LiteralPath $destination)) {
         $runtime = $servers[0].DirectoryName
         $dependencyRecords = @()
         foreach ($dependency in $dependencies) {
-            $depZip = Join-Path $stage 'cudart.zip'
+            $depZip = Join-Path $stage 'dependency.zip'
             $depSha = Save-VerifiedAsset $dependency $depZip
-            $depDir = Join-Path $stage 'cudart'
+            $depDir = Join-Path $stage 'dependency'
             Expand-Archive -LiteralPath $depZip -DestinationPath $depDir
             $dlls = @(Get-ChildItem -LiteralPath $depDir -Recurse -File -Filter *.dll)
-            if (-not ($dlls | Where-Object Name -Like 'cudart*.dll') -or -not ($dlls | Where-Object Name -Like 'cublas*.dll')) {
-                throw 'CUDA dependency archive is missing cudart/cublas DLLs.'
+            foreach ($required in $spec.DependencyDlls) {
+                if (-not ($dlls | Where-Object Name -Like $required)) { throw "Dependency archive is missing $required ($($dependency.name))." }
             }
             # Keep the dependency archive intact (including licenses) and expose its DLLs next to the executable.
-            Copy-Item -LiteralPath $depDir -Destination (Join-Path $runtime 'cuda-dependencies') -Recurse
+            Copy-Item -LiteralPath $depDir -Destination (Join-Path $runtime "$Backend-dependencies") -Recurse
             foreach ($dll in $dlls) {
                 $dllTarget = Join-Path $runtime $dll.Name
                 if (Test-Path -LiteralPath $dllTarget) { throw "Duplicate dependency DLL: $($dll.Name)" }
@@ -256,7 +261,7 @@ if (-not (Test-Path -LiteralPath $destination)) {
             throw "Runtime version check failed: $versionText"
         }
         @{ tag = $tag; backend = $Backend; asset = $asset.name; sha256 = $sha; source = $asset.browser_download_url; dependencies = $dependencyRecords; installedUtc = [DateTime]::UtcNow.ToString('o'); versionOutput = $versionText } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $runtime 'install.json') -Encoding UTF8
-        # Both paths are constructed inside the workspace; destination is a validated bNNNNN tag.
+        # Both paths are constructed inside the data directory; destination is a validated bNNNNN tag.
         Move-Item -LiteralPath $runtime -Destination $destination
         Write-Host "Installed: $destination"
     } finally {
