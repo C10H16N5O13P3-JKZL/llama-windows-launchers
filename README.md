@@ -252,4 +252,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test-backends.ps1
 
 测试用小型模拟发行包验证安装、依赖部署、各后端与模式的启动参数、选择菜单、配置文件与数据目录迁移和 SHA256 失败回退，不替代真实硬件上的推理测试。推送到 GitHub 后，`.github/workflows/test.yml` 会在 Windows 上自动运行同一测试，并检查脚本保持纯 ASCII（Windows PowerShell 5.1 按系统代码页读取无 BOM 脚本，非 ASCII 字符会在其他语言的系统上出错）。
 
-`.gitignore` 排除了下载的运行时、模型、虚拟环境、缓存、日志和本机配置，上传时请保留这些排除项。本项目未附带许可证文件；发布者可按自己的授权意愿添加许可证。下载的第三方程序和模型遵循各自的许可证。
+`.gitignore` 排除了下载的运行时、模型、虚拟环境、缓存、日志和本机配置，上传时请保留这些排除项。
+
+## 许可证
+
+本仓库的脚本以 [MIT 许可证](LICENSE) 发布。脚本下载的第三方程序（llama.cpp、CUDA 运行库、OpenVINO 等）和模型不属于本仓库，遵循各自的许可证。
