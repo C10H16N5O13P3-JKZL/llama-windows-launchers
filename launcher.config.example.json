@@ -1,0 +1,7 @@
+{
+  "dataDir": "",
+  "modelsDir": "",
+  "defaultModel": "",
+  "port": 28080,
+  "ctx": 16384
+}

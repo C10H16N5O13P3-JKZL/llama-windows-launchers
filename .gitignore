@@ -23,3 +23,5 @@ __pycache__/
 .idea/
 .llama-*-test-*/
 /tests/.work-*/
+# Per-machine settings (copy launcher.config.example.json)
+/launcher.config.json

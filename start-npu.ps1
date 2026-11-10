@@ -33,6 +33,8 @@ Examples:
   start-npu.bat -m qwen3-8b -mp 4096 -mr 2048
   .\start-npu.ps1 -x @('--swa-full')
 Default version: selected OpenVINO runtime. qwen3-8b uses GenAI instead.
+Aliases download from Hugging Face into the models folder on first use;
+set HF_ENDPOINT to use a mirror. Folders follow launcher.config.json.
 NPU support and output quality depend on the model and runtime.
 '@
     return
@@ -41,6 +43,10 @@ NPU support and output quality depend on the model and runtime.
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\tools\llama-runtime.ps1"
 if ($Port -lt 1 -or $Port -gt 65535 -or $Ctx -lt 1) { throw 'Invalid Port or Ctx.' }
+$config = Get-LlamaConfig
+$modelsDir = $config.modelsDir
+# HF_ENDPOINT is the Hugging Face convention for mirrors; huggingface_hub (GenAI path) honors it too.
+$hfEndpoint = if ($env:HF_ENDPOINT) { $env:HF_ENDPOINT.TrimEnd('/') } else { 'https://huggingface.co' }
 # short name -> GGUF (llama-server) or OpenVINO IR repo (ov_server.py); both passed quality checks on NPU
 $gguf = @{
     "lfm2.5" = @{ repo = "LiquidAI/LFM2.5-1.2B-Instruct-GGUF"; file = "LFM2.5-1.2B-Instruct-Q4_K_M.gguf" }  # ~49 tok/s
@@ -53,14 +59,13 @@ $key = $Model.ToLower()
 function Start-LlamaNpu([string]$path) {
     $path = Resolve-Gguf $path
     $exe = Get-LlamaRuntime 'openvino' $Version
-    $launchArgs = @('-m', $path, '-c', "$Ctx", '-np', '1', '--host', $HostAddr, '--port', "$Port") + $ExtraArgs
+    $launchArgs = @('-m', $path, '-c', "$Ctx") + $LlamaBackends.openvino.LaunchArgs + @('--host', $HostAddr, '--port', "$Port") + $ExtraArgs
     Write-Host "Runtime: $exe"
     if ($DryRun) { $launchArgs | ConvertTo-Json; return }
     $env:GGML_OPENVINO_DEVICE = "NPU"
     # GGML_OPENVINO_CACHE_DIR breaks NPU compilation ("WeightlessCacheAttribute"), keep it unset
     Remove-Item Env:GGML_OPENVINO_CACHE_DIR -ErrorAction SilentlyContinue
     Write-Host "NPU llama-server: $path  ctx $Ctx  http://${HostAddr}:$Port  (first start compiles for the NPU, ~30 s)"
-    # -np 1: the NPU backend does not support parallel sequences
     & $exe @launchArgs
     exit $LASTEXITCODE
 }
@@ -68,36 +73,50 @@ function Start-LlamaNpu([string]$path) {
 function Start-GenaiNpu([string]$dir) {
     if ($Version -or $ExtraArgs.Count) { throw 'Version and ExtraArgs only apply to GGUF/llama.cpp, not GenAI.' }
     if ($DryRun) { Write-Host "GenAI NPU model: $dir"; return }
-    $py = "$PSScriptRoot\ov-venv\Scripts\python.exe"
-    if (-not (Test-Path $py)) {
-        Write-Host "Creating ov-venv with OpenVINO GenAI (nightly, needed for NPU LLM support)..."
-        python -m venv "$PSScriptRoot\ov-venv"
+    $venv = Join-Path $config.dataDir 'ov-venv'
+    $py = Join-Path $venv 'Scripts\python.exe'
+    $ready = Join-Path $venv '.launcher-ready'  # written only after a complete dependency install
+    if (-not (Test-Path -LiteralPath $ready) -and (Test-Path -LiteralPath $py)) {
+        # Environment created by an earlier launcher version: accept it if it already works.
+        & $py -c "import openvino_genai, huggingface_hub" 2>$null
+        if ($LASTEXITCODE -eq 0) { Set-Content -LiteralPath $ready -Value 'ok' }
+    }
+    if (-not (Test-Path -LiteralPath $ready)) {
+        if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+            throw 'Python was not found on PATH. The GenAI path needs Python; GGUF models (start-npu.bat -m file.gguf) do not.'
+        }
+        Write-Host "Creating $venv with OpenVINO GenAI (nightly, needed for NPU LLM support)..."
+        python -m venv $venv
+        if ($LASTEXITCODE -ne 0) { throw "Could not create the Python environment: $venv" }
         & $py -m pip install -q -U pip
         & $py -m pip install -q -U --pre openvino-genai openvino-tokenizers openvino huggingface_hub `
             --extra-index-url https://storage.openvinotoolkit.org/simple/wheels/nightly
+        if ($LASTEXITCODE -ne 0) { throw 'Installing OpenVINO GenAI failed; see the pip output above. Run again to retry.' }
+        Set-Content -LiteralPath $ready -Value 'ok'
     }
     if ($dir -match '^OpenVINO/') {
-        $repo = $dir; $dir = "$PSScriptRoot\models\" + ($repo -split "/")[1]
-        if (-not (Test-Path "$dir\openvino_model.xml")) {
+        $repo = $dir; $dir = Join-Path $modelsDir ($repo -split "/")[1]
+        if (-not (Test-Path -LiteralPath "$dir\openvino_model.xml")) {
             Write-Host "Downloading $repo ..."
             & $py -c "import huggingface_hub as h, sys; h.snapshot_download(sys.argv[1], local_dir=sys.argv[2])" $repo $dir
-            if (-not (Test-Path "$dir\openvino_model.xml")) { Write-Error "Download failed: $repo"; exit 1 }
+            if (-not (Test-Path -LiteralPath "$dir\openvino_model.xml")) { Write-Error "Download failed: $repo"; exit 1 }
         }
     }
     Write-Host "NPU OpenVINO GenAI server: $dir  http://${HostAddr}:$Port/v1  (first start compiles for the NPU, ~30-90 s)"
     & $py "$PSScriptRoot\tools\ov_server.py" --model $dir --device NPU --host $HostAddr --port $Port `
         --max-prompt $MaxPrompt --max-response $MaxResponse
+    exit $LASTEXITCODE
 }
 
 if ($gguf.ContainsKey($key)) {
-    $path = "$PSScriptRoot\models\" + $gguf[$key].file
-    if (-not (Test-Path $path)) {
+    $path = Join-Path $modelsDir $gguf[$key].file
+    if (-not (Test-Path -LiteralPath $path)) {
         if ($DryRun) { throw "Model not downloaded: $path" }
         Write-Host "Downloading $($gguf[$key].repo)/$($gguf[$key].file) ..."
-        $null = New-Item -ItemType Directory -Force -Path "$PSScriptRoot\models"
+        $null = New-Item -ItemType Directory -Force -Path $modelsDir
         $partial = "$path.$([guid]::NewGuid().ToString()).part"
         try {
-            curl.exe -L --fail -o $partial "https://huggingface.co/$($gguf[$key].repo)/resolve/main/$($gguf[$key].file)"
+            curl.exe -L --fail -o $partial "$hfEndpoint/$($gguf[$key].repo)/resolve/main/$($gguf[$key].file)"
             if ($LASTEXITCODE -ne 0) { throw 'Model download failed.' }
             Move-Item -LiteralPath $partial -Destination $path
         } finally {
@@ -109,8 +128,8 @@ if ($gguf.ContainsKey($key)) {
     Start-GenaiNpu $ir[$key]
 } elseif ($Model -like "*.gguf") {
     Start-LlamaNpu $Model
-} elseif (Test-Path "$Model\openvino_model.xml") {
-    Start-GenaiNpu (Resolve-Path $Model).Path
+} elseif (Test-Path -LiteralPath "$Model\openvino_model.xml") {
+    Start-GenaiNpu (Resolve-Path -LiteralPath $Model).Path
 } else {
     Write-Error "Unknown model '$Model'. Use one of: $(($gguf.Keys + $ir.Keys) -join ', '), a .gguf file, or an OpenVINO IR folder."
     exit 1

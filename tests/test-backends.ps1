@@ -67,6 +67,59 @@ try {
     $text = (& powershell -NoProfile -ExecutionPolicy Bypass -File "$work\start-server.ps1" -b Auto -v b99999 "$work\model.gguf" -d 2>&1 | ForEach-Object { "$_" }) -join "`n"
     $ErrorActionPreference = 'Stop'
     if ($LASTEXITCODE -eq 0 -or $text -notmatch 'No runtime installed') { throw "Auto with missing runtimes must fail clearly: $text" }
+    # Real launch path (the fixture prints its version and exits 0), fixed port and AutoPort.
+    foreach ($portArgs in @(@('-p', '29321'), @('-p', '29321', '-AutoPort'))) {
+        $text = (& powershell -NoProfile -ExecutionPolicy Bypass -File "$work\start-server.ps1" -b CPU "$work\model.gguf" @portArgs 2>&1) -join "`n"
+        if ($LASTEXITCODE -ne 0 -or $text -notmatch 'build 12345') { throw "Launch failed ($portArgs): $text" }
+    }
+    # Model picker: lists the models folder without projectors and later shards; accepts a number or a path.
+    . "$work\tools\llama-runtime.ps1"
+    $null = New-Item -ItemType Directory -Path "$work\pick\sub"
+    foreach ($name in @('a.gguf', 'mmproj-a.gguf', 'sub\b-00001-of-00002.gguf', 'sub\b-00002-of-00002.gguf')) { Copy-Item "$work\model.gguf" "$work\pick\$name" }
+    function Test-LlamaInteractive { $true }
+    $pickAnswers = New-Object 'System.Collections.Generic.Queue[string]'
+    function Read-Host { param($Prompt) $pickAnswers.Dequeue() }
+    $pickConfig = @{ defaultModel = ''; modelsDir = "$work\pick" }
+    $pickAnswers.Enqueue('9'); $pickAnswers.Enqueue('2')
+    if ((Select-LlamaModel $pickConfig) -ne "$work\pick\sub\b-00001-of-00002.gguf") { throw 'Model picker: number' }
+    $pickAnswers.Enqueue('')
+    if ((Select-LlamaModel $pickConfig) -ne "$work\pick\a.gguf") { throw 'Model picker: Enter' }
+    $pickAnswers.Enqueue("`"$work\model.gguf`"")
+    if ((Select-LlamaModel $pickConfig) -ne "$work\model.gguf") { throw 'Model picker: quoted path' }
+    # List without -b covers every backend.
+    $listed = @(& "$work\manage-llama.ps1" List)
+    if ($listed.Count -ne 2 -or @($listed | Where-Object { $_.Active -and $_.Version -eq 'b12345' }).Count -ne 2) { throw "List must show cpu and cuda: $($listed | Out-String)" }
+    # No model and no console: fail with guidance instead of waiting for input.
+    $ErrorActionPreference = 'Continue'
+    $text = ($null | & powershell -NoProfile -ExecutionPolicy Bypass -File "$work\start-server.ps1" -b CPU -d 2>&1 | ForEach-Object { "$_" }) -join "`n"
+    $ErrorActionPreference = 'Stop'
+    if ($LASTEXITCODE -eq 0 -or $text -notmatch 'No model given') { throw "Missing model must fail clearly: $text" }
+    # launcher.config.json: default model (relative to modelsDir), port and ctx; arguments still win.
+    Set-Content "$work\launcher.config.json" '{ "modelsDir": ".", "defaultModel": "model.gguf", "port": 29123, "ctx": 2048 }'
+    $text = (& powershell -NoProfile -ExecutionPolicy Bypass -File "$work\start-server.ps1" -b CPU -d 2>&1) -join "`n"
+    if ($LASTEXITCODE -ne 0 -or $text -notmatch [regex]::Escape("$work\model.gguf") -or $text -notmatch ':29123' -or $text -notmatch 'Ctx: 2048') { throw "Config defaults failed: $text" }
+    $text = (& powershell -NoProfile -ExecutionPolicy Bypass -File "$work\start-server.ps1" -b CPU -p 29200 -c 1024 -d 2>&1) -join "`n"
+    if ($text -notmatch ':29200' -or $text -notmatch 'Ctx: 1024') { throw "Arguments must override config: $text" }
+    # Relocated data: move the runtimes away and point the launchers at them, by config and by variable.
+    $null = New-Item -ItemType Directory -Path "$work\elsewhere"
+    Move-Item "$work\llama-versions" "$work\elsewhere\llama-versions"
+    Set-Content "$work\launcher.config.json" '{ "dataDir": "elsewhere" }'
+    $text = (& powershell -NoProfile -ExecutionPolicy Bypass -File "$work\start-server.ps1" -b CPU "$work\model.gguf" -d 2>&1) -join "`n"
+    if ($LASTEXITCODE -ne 0 -or $text -notmatch 'elsewhere\\llama-versions\\cpu\\b12345') { throw "dataDir relocation failed: $text" }
+    Remove-Item "$work\launcher.config.json"
+    $env:LLAMA_LAUNCHER_HOME = "$work\elsewhere"
+    try {
+        $text = (& powershell -NoProfile -ExecutionPolicy Bypass -File "$work\start-server.ps1" -b CUDA "$work\model.gguf" -d 2>&1) -join "`n"
+        if ($LASTEXITCODE -ne 0 -or $text -notmatch 'elsewhere\\llama-versions\\cuda\\b12345') { throw "LLAMA_LAUNCHER_HOME relocation failed: $text" }
+        if (@(& "$work\manage-llama.ps1" List -b cuda).Count -ne 1) { throw 'List must follow LLAMA_LAUNCHER_HOME' }
+    } finally { Remove-Item Env:LLAMA_LAUNCHER_HOME }
+    Move-Item "$work\elsewhere\llama-versions" "$work\llama-versions"
+    # A typo in the config must be reported, not ignored.
+    Set-Content "$work\launcher.config.json" '{ "modelDir": "x" }'
+    $rejected = $false
+    try { & "$work\manage-llama.ps1" List } catch { $rejected = $_.Exception.Message -match 'Unknown setting' }
+    Remove-Item "$work\launcher.config.json"
+    if (-not $rejected) { throw 'Unknown config setting was accepted' }
     # A corrupt dependency must not publish a new installation or alter selection.
     $release.tag_name = 'b12346'
     foreach ($asset in $release.assets) { $asset.name = $asset.name.Replace('b12345', 'b12346') }
@@ -84,7 +137,7 @@ try {
     function Read-Host { param($Prompt) $menuAnswers.Dequeue() }
     & "$work\manage-llama.ps1" -Interactive
     if ((Get-Content "$work\llama-versions\cpu\current.txt") -ne 'b12345') { throw 'Interactive install did not select latest cpu' }
-    Write-Host 'PASS: CPU/CUDA asset selection, dependency deployment, manifests, launcher routing, SHA256 failure preserves current version, interactive menu.'
+    Write-Host 'PASS: CPU/CUDA asset selection, dependency deployment, manifests, launcher routing, config and data relocation, SHA256 failure preserves current version, interactive menu.'
 } finally {
     $resolved = [IO.Path]::GetFullPath($work)
     if ((Split-Path $resolved -Parent) -ne [IO.Path]::GetFullPath($PSScriptRoot) -or (Split-Path $resolved -Leaf) -notlike '.work-*') { throw 'Invalid test cleanup path' }

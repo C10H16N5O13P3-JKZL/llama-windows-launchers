@@ -27,7 +27,7 @@
 .\start-gguf.bat "E:\模型\model.gguf"
 ```
 
-也可以将 `.gguf` 文件拖到 `start-gguf.bat` 图标上，或双击该脚本后输入完整路径。
+也可以将 `.gguf` 文件拖到 `start-gguf.bat` 图标上；或直接双击它：脚本会列出模型文件夹（默认 `models/`）里的 GGUF 供按编号选择，也可以粘贴或拖入任意完整路径。如果还没有安装任何运行时，会先打开安装菜单，装好后继续启动。
 
 `start-gguf.bat` 默认**自动选择后端**：检测到 NVIDIA 显卡且已安装 CUDA 运行时则用 CUDA，否则依次尝试 Vulkan、CPU，只会选已安装的运行时，并在控制台显示选择结果。用 `-b` 可手动指定；其他启动器也可用 `-b Auto`。
 
@@ -75,7 +75,35 @@ CPU、CUDA 有各自的快捷入口；安装一次后即可使用：
 .\start-server.bat -m "E:\模型\model.gguf" -ap -d
 ```
 
-`start-server` 不带 `-m` 时使用 `models/LFM3-1.7B-Q8_0.gguf`。仓库不附带或自动下载这个默认模型；首次使用请明确传入自己的 GGUF 路径。
+所有 GGUF 启动器不带模型时行为一致：使用配置文件中的 `defaultModel`；没有配置则列出模型文件夹供选择或输入路径。在没有控制台输入的环境（管道、计划任务、CI）中不会等待输入，而是直接报错提示传入路径。仓库不附带或自动下载模型。
+
+## 本机配置与迁移
+
+脚本本身不含任何本机路径。默认情况下运行时、模型和虚拟环境都放在脚本文件夹内，**整个文件夹可以直接复制或移动到其他位置、其他机器**。
+
+需要把数据与脚本分开（例如运行时放大容量盘、多个克隆或 worktree 共用一份运行时、更新脚本时不动数据）时，复制 `launcher.config.example.json` 为 `launcher.config.json` 并修改。该文件不进入版本控制，所有项都可省略或留空：
+
+| 设置 | 作用 | 默认 |
+|---|---|---|
+| `dataDir` | 存放 `llama-versions/`、legacy 目录、`ov-venv/` 的数据目录 | 脚本文件夹 |
+| `modelsDir` | 模型文件夹：无模型参数时列出其中的 GGUF；NPU 别名下载到这里 | `<dataDir>/models` |
+| `defaultModel` | 不带模型参数时使用的 GGUF；相对路径以 `modelsDir` 为基准 | 无（询问） |
+| `port` / `ctx` | `start-server` 系列的默认端口与上下文大小 | 28080 / 16384 |
+
+```json
+{
+  "dataDir": "D:/llama-data",
+  "modelsDir": "E:/模型",
+  "defaultModel": "model.gguf",
+  "ctx": 8192
+}
+```
+
+JSON 中路径用 `/` 或 `\\` 分隔；相对路径以脚本文件夹为基准；可使用 `%USERPROFILE%` 等环境变量。写错的设置名会直接报错。优先级：命令行参数 > 环境变量 `LLAMA_LAUNCHER_HOME`（仅覆盖 `dataDir`）> 配置文件 > 内置默认值。
+
+迁移已有安装：把 `llama-versions/`（需要的话连同 `models/` 和 legacy 目录）移动到新位置，再把 `dataDir` 指向它即可，无需重新下载；`manage-llama.bat List` 会显示当前数据目录下的全部版本。Python 虚拟环境 `ov-venv/` 内含绝对路径，移动后请删除并让脚本重建。
+
+下载相关的环境变量：`HTTPS_PROXY` 对 `curl.exe` 下载生效；`HF_ENDPOINT` 可指定 Hugging Face 镜像（NPU 模型别名下载使用）。
 
 端口探测区分“被占用”和“访问受限”。Windows 保留端口可能没有监听进程，但仍返回 `AccessDenied / 10013`。可用以下命令查看保留区间：
 
@@ -121,7 +149,7 @@ GenAI 辅助服务提供 `/health`、`/v1/models` 和 `/v1/chat/completions`，�
 
 | 命令 | 作用 |
 |---|---|
-| `List` | 查看本地版本，`Active` 表示默认选择 |
+| `List` | 查看本地版本，`Active` 表示默认选择；不带 `-b` 时列出全部后端 |
 | `Check` | 查询最新对应发行包，不下载 |
 | `Install -v b编号` | 安装指定版本，不改变默认选择 |
 | `Update` | 安装最新对应版本，并设为默认 |
@@ -144,6 +172,8 @@ GenAI 辅助服务提供 `/health`、`/v1/models` 和 `/v1/chat/completions`，�
 CUDA 安装同时下载同一发行版的 `llama-...-bin-win-cuda-12.4-x64.zip` 与 `cudart-llama...-bin-win-cuda-12.4-x64.zip`，分别校验后将依赖 DLL 部署到程序旁边，完整依赖文件另保留在 `cuda-dependencies/`。两包均成功后才切换，依赖来源和摘要也写入 `install.json`。`Check -b cuda` 会显示两个包及其大小；CUDA 下载明显大于 CPU/Vulkan。当前不提供 CUDA 13.x 或 ARM64 版本选择。
 
 `latest` 指最近提供对应 Windows x64 包的 build，可能包含预发布；脚本读取发行列表，而不依赖可能没有程序包的 `/releases/latest`。
+
+数据目录（默认即脚本文件夹，见“本机配置与迁移”）的布局：
 
 ```text
 llama-versions/
@@ -214,14 +244,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\manage-llama.ps1 List
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test-backends.ps1
 ```
 
-测试用小型模拟发行包验证 CPU/CUDA 安装、依赖部署、启动参数和 SHA256 失败回退，不替代真实显卡推理测试。
+测试用小型模拟发行包验证 CPU/CUDA 安装、依赖部署、启动参数、配置文件与数据目录迁移、模型选择和 SHA256 失败回退，不替代真实显卡推理测试。推送到 GitHub 后，`.github/workflows/test.yml` 会在 Windows 上自动运行同一测试，并检查脚本保持纯 ASCII（Windows PowerShell 5.1 按系统代码页读取无 BOM 脚本，非 ASCII 字符会在其他语言的系统上出错）。
 
-- `start-gguf.bat`：拖入和交互输入模型路径。
+- `start-gguf.bat`：拖入或交互选择模型，自动选择后端和端口。
 - `start-server.*`：Vulkan / CPU / CUDA 共用启动器。
 - `start-cpu.bat` / `start-cuda.bat`：指定后端的快捷入口。
 - `start-npu.*`：Intel NPU GGUF / GenAI 启动器。
 - `manage-llama.*`：运行时版本管理。
-- `tools/llama-runtime.ps1`：版本路径解析与 GGUF 文件头检查。
+- `launcher.config.example.json`：本机配置模板。
+- `tools/llama-runtime.ps1`：共享层——配置读取、后端注册表（发行包匹配规则、启动参数；新增后端或更换 CUDA 版本只改这里）、版本路径解析、自动后端选择、模型选择与 GGUF 文件头检查。
 - `tools/llama-port.ps1`：端口探测和绑定错误识别。
 - `tools/ov_server.py`：可选 GenAI HTTP 服务。
 
